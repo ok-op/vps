@@ -1,0 +1,88 @@
+name: Ubuntu RDP/SSH with Zrok Tunnel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-tunnel:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install Zrok CLI
+      run: |
+        cd $(mktemp -d);
+
+        ZROK_VERSION=$(
+          curl -sSf https://api.github.com/repos/openziti/zrok/releases/latest \
+          | jq -r '.tag_name'
+        );
+
+        case $(uname -m) in
+          x86_64)         GOXARCH=amd64
+          ;;
+          aarch64|arm64)  GOXARCH=arm64
+          ;;
+          arm*)           GOXARCH=arm
+          ;;
+          *)              echo "ERROR: unknown arch '$(uname -m)'" >&2
+                          exit 1
+          ;;
+        esac;
+
+        curl -sSfL \
+          "https://github.com/openziti/zrok/releases/download/${ZROK_VERSION}/zrok_${ZROK_VERSION#v}_linux_${GOXARCH}.tar.gz" \
+          | tar -xz -f -;
+
+        sudo install -o root -g root ./zrok /usr/local/bin/;
+
+        zrok version;
+
+    - name: Configure Zrok for tunnel
+      env:
+        ZROK_TOKEN: ${{ secrets.ZROK_AUTH_TOKEN }}
+      run: |
+        zrok enable r99U4padYPE8
+
+    - name: Setup SSH Server
+      run: |
+        sudo apt update
+        sudo apt install -y openssh-server
+        sudo systemctl enable ssh
+        sudo systemctl start ssh
+
+    - name: Generate SSH keys
+      run: |
+        ssh-keygen -t rsa -f /home/runner/.ssh/id_rsa -N ""
+        echo "::add-mask::$(cat /home/runner/.ssh/id_rsa)"
+        echo "::add-mask::$(cat /home/runner/.ssh/id_rsa.pub)"
+        echo "Public Key: $(cat /home/runner/.ssh/id_rsa.pub)"
+        
+    - name: Configure SSH User and Password
+      run: |
+        echo "runner:root" | sudo chpasswd
+        echo "Password for SSH is: root"
+      
+    - name: Start Zrok Tunnel for SSH
+      env:
+        SSH_PORT: 22
+      run: |
+        zrok share private --backend-mode tcpTunnel localhost:$SSH_PORT --name "github-ubuntu-ssh"
+
+    - name: SSH Info - Username and Password
+      run: |
+        echo "SSH Username: runner" > ssh_info.txt
+        echo "SSH Password: root" >> ssh_info.txt
+        echo "SSH Info saved to ssh_info.txt"
+
+    - name: Upload SSH Info
+      uses: actions/upload-artifact@v3
+      with:
+        name: ssh_info
+        path: ssh_info.txt
+        
+    - name: Keep Workflow Running
+      run: |
+        echo "Keeping the job running indefinitely."
+        while true; do sleep 30; done
